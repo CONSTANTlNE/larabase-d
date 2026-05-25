@@ -321,6 +321,55 @@ class PostgresDriver implements DatabaseDriverInterface
     }
 
     /**
+     * @param  array<int, array<string, mixed>>  $pkValueSets
+     */
+    public function deleteRows(string $qualifiedName, array $pkValueSets): int
+    {
+        [$schema, $table] = $this->validateTableName($qualifiedName);
+        $pkColumns = $this->getPrimaryKeyColumns($qualifiedName);
+
+        if (empty($pkColumns)) {
+            throw new RuntimeException('Table has no primary key — cannot safely delete rows.');
+        }
+
+        $pdo = $this->connect();
+        $whereClauses = array_map(fn (string $col) => "\"{$col}\" = ?", $pkColumns);
+        $sql = "DELETE FROM \"{$schema}\".\"{$table}\" WHERE ".implode(' AND ', $whereClauses);
+
+        $pdo->beginTransaction();
+
+        try {
+            $stmt = $pdo->prepare($sql);
+            $deleted = 0;
+
+            foreach ($pkValueSets as $pkValues) {
+                $stmt->execute(array_map(fn (string $col) => $pkValues[$col] ?? null, $pkColumns));
+                $deleted += $stmt->rowCount();
+            }
+
+            $pdo->commit();
+
+            return $deleted;
+        } catch (Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
+    }
+
+    public function truncateTable(string $qualifiedName): void
+    {
+        [$schema, $table] = $this->validateTableName($qualifiedName);
+        $this->connect()->exec("TRUNCATE TABLE \"{$schema}\".\"{$table}\"");
+    }
+
+    public function dropTable(string $qualifiedName): void
+    {
+        [$schema, $table] = $this->validateTableName($qualifiedName);
+        $this->connect()->exec("DROP TABLE \"{$schema}\".\"{$table}\"");
+        $this->tablesCache = null;
+    }
+
+    /**
      * Returns the PostgreSQL data_type for a column, e.g. "jsonb", "integer", "text".
      */
     private function getColumnType(string $qualifiedName, string $column): string

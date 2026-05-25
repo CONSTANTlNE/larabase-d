@@ -26,8 +26,11 @@ Route::middleware('auth')->group(function () {
     Route::get('/browser/tables', [BrowserController::class, 'tables'])->name('browser.tables');
     Route::get('/browser/tables/{table}', [BrowserController::class, 'tableData'])->name('browser.table-data');
     Route::get('/browser/tables/{table}/structure', [BrowserController::class, 'tableStructure'])->name('browser.table-structure');
+    Route::delete('/browser/tables/{table}/rows/bulk', [BrowserController::class, 'deleteRows'])->name('browser.rows.delete');
     Route::delete('/browser/tables/{table}/rows', [BrowserController::class, 'deleteRow'])->name('browser.row.delete');
     Route::patch('/browser/tables/{table}/rows', [BrowserController::class, 'updateRow'])->name('browser.row.update');
+    Route::delete('/browser/tables/{table}/records', [BrowserController::class, 'truncateTable'])->name('browser.table.truncate');
+    Route::delete('/browser/tables/{table}', [BrowserController::class, 'dropTable'])->name('browser.table.drop');
     Route::post('/browser/query', [BrowserController::class, 'executeQuery'])->name('browser.query');
     Route::get('/browser/saved-queries', [BrowserController::class, 'savedQueries'])->name('browser.saved-queries');
     Route::post('/browser/saved-queries', [BrowserController::class, 'storeSavedQuery'])->name('browser.saved-queries.store');

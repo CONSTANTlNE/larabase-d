@@ -290,6 +290,62 @@ class BrowserController extends Controller
         return response()->json(['success' => true]);
     }
 
+    public function deleteRows(string $table, Request $request, DatabaseManager $manager): JsonResponse|RedirectResponse
+    {
+        $connection = $this->resolveActiveConnection();
+
+        if ($connection instanceof RedirectResponse) {
+            return $connection;
+        }
+
+        $validated = $request->validate([
+            'pks' => ['required', 'array', 'min:1'],
+            'pks.*' => ['required', 'array'],
+        ]);
+
+        try {
+            $deleted = $manager->driver($connection)->deleteRows($table, $validated['pks']);
+        } catch (Throwable $e) {
+            return response()->json(['error' => $e->getMessage()], 422);
+        }
+
+        return response()->json(['success' => true, 'deleted' => $deleted]);
+    }
+
+    public function truncateTable(string $table, DatabaseManager $manager): JsonResponse|RedirectResponse
+    {
+        $connection = $this->resolveActiveConnection();
+
+        if ($connection instanceof RedirectResponse) {
+            return $connection;
+        }
+
+        try {
+            $manager->driver($connection)->truncateTable($table);
+        } catch (Throwable $e) {
+            return response()->json(['error' => $e->getMessage()], 422);
+        }
+
+        return response()->json(['success' => true]);
+    }
+
+    public function dropTable(string $table, DatabaseManager $manager): JsonResponse|RedirectResponse
+    {
+        $connection = $this->resolveActiveConnection();
+
+        if ($connection instanceof RedirectResponse) {
+            return $connection;
+        }
+
+        try {
+            $manager->driver($connection)->dropTable($table);
+        } catch (Throwable $e) {
+            return response()->json(['error' => $e->getMessage()], 422);
+        }
+
+        return response()->json(['success' => true]);
+    }
+
     public function disconnect(): RedirectResponse
     {
         session()->forget('larabased_connection_id');

@@ -51,4 +51,13 @@ interface DatabaseDriverInterface
      * @param  array<string, mixed>  $newValues
      */
     public function updateRow(string $qualifiedName, array $pkValues, array $newValues): void;
+
+    /**
+     * @param  array<int, array<string, mixed>>  $pkValueSets
+     */
+    public function deleteRows(string $qualifiedName, array $pkValueSets): int;
+
+    public function truncateTable(string $qualifiedName): void;
+
+    public function dropTable(string $qualifiedName): void;
 }

@@ -5,11 +5,13 @@
 {{-- CodeMirror 6 via esm.sh (deduplicates @codemirror/state so instanceof checks work) --}}
 <script type="module">
     import { EditorView, keymap, lineNumbers, highlightActiveLine } from 'https://esm.sh/@codemirror/view@6';
-    import { EditorState } from 'https://esm.sh/@codemirror/state@6';
+    import { EditorState, Compartment } from 'https://esm.sh/@codemirror/state@6';
     import { sql } from 'https://esm.sh/@codemirror/lang-sql@6';
     import { oneDark } from 'https://esm.sh/@codemirror/theme-one-dark@6';
     import { defaultKeymap, history, historyKeymap } from 'https://esm.sh/@codemirror/commands@6';
     import { closeBrackets, closeBracketsKeymap } from 'https://esm.sh/@codemirror/autocomplete@6';
+
+    const _themeCompartment = new Compartment();
 
     function runQuery() {
         const sql = window.cmEditor ? window.cmEditor.state.doc.toString() : '';
@@ -28,6 +30,8 @@
         const editorEl = document.getElementById('cm-editor');
         if (!editorEl) return;
 
+        const isDark = document.documentElement.classList.contains('dark');
+
         const runQueryKey = {
             key: 'Ctrl-Enter',
             mac: 'Cmd-Enter',
@@ -42,7 +46,7 @@
                 history(),
                 closeBrackets(),
                 sql(),
-                oneDark,
+                _themeCompartment.of(isDark ? oneDark : []),
                 keymap.of([
                     ...defaultKeymap,
                     ...historyKeymap,
@@ -70,6 +74,13 @@
         });
     };
 
+    window.updateEditorTheme = function(isDark) {
+        if (!window.cmEditor) return;
+        window.cmEditor.dispatch({
+            effects: _themeCompartment.reconfigure(isDark ? oneDark : []),
+        });
+    };
+
     window.runQuery = runQuery;
 
     // Init after DOM ready
@@ -80,11 +91,8 @@
     }
 </script>
 <style>
-    .cm-editor { background: #111827 !important; }
-    .cm-editor .cm-gutters { background: #111827 !important; border-right: 1px solid #1f2937 !important; }
     /* Table styles */
     .results-table { border-collapse: collapse; width: 100%; }
-    .results-table th { background: #111827; position: sticky; top: 0; z-index: 1; }
 </style>
 @endpush
 
@@ -276,6 +284,111 @@
     </div>
 </div>
 
+{{-- ── BULK DELETE MODAL ───────────────────────────────────────────────── --}}
+<div id="bulk-delete-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-6">
+    <div class="absolute inset-0 bg-black/60" onclick="closeBulkDeleteModal()"></div>
+    <div class="relative bg-gray-900 border border-gray-700 rounded-xl w-full max-w-md shadow-2xl">
+        <div class="p-5">
+            <div class="flex items-start gap-3 mb-5">
+                <div class="w-8 h-8 rounded-full bg-red-500/15 flex items-center justify-center flex-shrink-0">
+                    <svg class="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h3 class="text-sm font-semibold text-white mb-1">Delete Selected Rows</h3>
+                    <p id="bulk-delete-info" class="text-xs text-gray-400 leading-relaxed"></p>
+                </div>
+            </div>
+            <div class="flex justify-end gap-2">
+                <button onclick="closeBulkDeleteModal()"
+                    class="text-xs text-gray-400 hover:text-gray-200 border border-gray-700 px-3 py-1.5 rounded transition-colors">
+                    Cancel
+                </button>
+                <button id="confirm-bulk-delete-btn"
+                    class="text-xs text-white bg-red-600 hover:bg-red-500 px-3 py-1.5 rounded font-medium transition-colors">
+                    Delete
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{{-- ── TRUNCATE MODAL ──────────────────────────────────────────────────── --}}
+<div id="truncate-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-6">
+    <div class="absolute inset-0 bg-black/60" onclick="closeTruncateModal()"></div>
+    <div class="relative bg-gray-900 border border-gray-700 rounded-xl w-full max-w-md shadow-2xl">
+        <div class="p-5">
+            <div class="flex items-start gap-3 mb-5">
+                <div class="w-8 h-8 rounded-full bg-amber-500/15 flex items-center justify-center flex-shrink-0">
+                    <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h3 class="text-sm font-semibold text-white mb-1">Clear All Records</h3>
+                    <p id="truncate-info" class="text-xs text-gray-400 leading-relaxed"></p>
+                    <p class="text-xs text-amber-400/80 mt-1.5">The table structure will be preserved.</p>
+                </div>
+            </div>
+            <div class="flex justify-end gap-2">
+                <button onclick="closeTruncateModal()"
+                    class="text-xs text-gray-400 hover:text-gray-200 border border-gray-700 px-3 py-1.5 rounded transition-colors">
+                    Cancel
+                </button>
+                <button id="confirm-truncate-btn"
+                    class="text-xs text-white bg-amber-600 hover:bg-amber-500 px-3 py-1.5 rounded font-medium transition-colors">
+                    Clear All Records
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{{-- ── DROP TABLE MODAL ────────────────────────────────────────────────── --}}
+<div id="drop-table-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-6">
+    <div class="absolute inset-0 bg-black/60" onclick="closeDropTableModal()"></div>
+    <div class="relative bg-gray-900 border border-gray-700 rounded-xl w-full max-w-md shadow-2xl">
+        <div class="p-5">
+            <div class="flex items-start gap-3 mb-4">
+                <div class="w-8 h-8 rounded-full bg-red-500/15 flex items-center justify-center flex-shrink-0">
+                    <svg class="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h3 class="text-sm font-semibold text-white mb-1">Drop Table</h3>
+                    <p id="drop-table-info" class="text-xs text-gray-400 leading-relaxed"></p>
+                    <p class="text-xs text-red-400/80 mt-1.5">This will permanently delete the table and all its data.</p>
+                </div>
+            </div>
+            <div class="mb-4">
+                <p class="text-xs text-gray-500 mb-1.5">
+                    Type <span id="drop-table-confirm-name" class="font-mono text-gray-300"></span> to confirm:
+                </p>
+                <input type="text" id="drop-table-confirm-input"
+                    class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-100 font-mono focus:outline-none focus:ring-1 focus:ring-red-500"
+                    oninput="checkDropConfirm(this)"
+                    placeholder="Type table name…"
+                    autocomplete="off">
+            </div>
+            <div class="flex justify-end gap-2">
+                <button onclick="closeDropTableModal()"
+                    class="text-xs text-gray-400 hover:text-gray-200 border border-gray-700 px-3 py-1.5 rounded transition-colors">
+                    Cancel
+                </button>
+                <button id="confirm-drop-btn" disabled
+                    class="text-xs text-white bg-red-600 hover:bg-red-500 px-3 py-1.5 rounded font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                    Drop Table
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 {{-- ── EDIT ROW MODAL ──────────────────────────────────────────────────── --}}
 <div id="edit-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-6">
     <div class="absolute inset-0 bg-black/60" onclick="closeEditModal()"></div>
@@ -427,7 +540,8 @@
     // Close any open modal on Escape
     document.addEventListener('keydown', function(e) {
         if (e.key !== 'Escape') return;
-        ['cell-modal', 'delete-modal', 'edit-modal'].forEach(modalHide);
+        ['cell-modal', 'delete-modal', 'edit-modal',
+         'bulk-delete-modal', 'truncate-modal', 'drop-table-modal'].forEach(modalHide);
     });
 
     // ── Cell Expand Modal ───────────────────────────────────────────────────
@@ -616,7 +730,170 @@
         _editState = null;
     };
 
-    document.getElementById('confirm-edit-btn').addEventListener('click', async function() {
+    // ── Bulk Delete Modal ───────────────────────────────────────────────────
+    let _bulkDeleteState = null;
+
+    window.openBulkDeleteModal = function () {
+        const pks = window.getSelectedPks ? window.getSelectedPks() : [];
+        if (pks.length === 0) return;
+        _bulkDeleteState = { table: currentTable, pks };
+
+        const tableName = currentTable && currentTable.includes('.') ? currentTable.split('.').pop() : currentTable;
+        document.getElementById('bulk-delete-info').textContent =
+            `This will permanently delete ${pks.length} row${pks.length !== 1 ? 's' : ''} from "${tableName}". This action cannot be undone.`;
+
+        const btn = document.getElementById('confirm-bulk-delete-btn');
+        btn.disabled = false;
+        btn.textContent = `Delete ${pks.length} row${pks.length !== 1 ? 's' : ''}`;
+        modalShow('bulk-delete-modal');
+    };
+    window.closeBulkDeleteModal = function () {
+        modalHide('bulk-delete-modal');
+        _bulkDeleteState = null;
+    };
+
+    document.getElementById('confirm-bulk-delete-btn').addEventListener('click', async function () {
+        if (!_bulkDeleteState) return;
+        this.disabled = true;
+        this.textContent = 'Deleting…';
+        try {
+            const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+            const resp = await fetch(
+                `/browser/tables/${encodeURIComponent(_bulkDeleteState.table)}/rows/bulk`,
+                {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+                    body: JSON.stringify({ pks: _bulkDeleteState.pks }),
+                }
+            );
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || 'Bulk delete failed');
+            closeBulkDeleteModal();
+            loadTableData(currentTable, currentPage);
+        } catch (e) {
+            this.disabled = false;
+            this.textContent = 'Delete';
+            alert('Error: ' + e.message);
+        }
+    });
+
+    // ── Truncate Modal ──────────────────────────────────────────────────────
+    let _truncateState = null;
+
+    window.openTruncateModal = function (btn) {
+        const table = btn.dataset.table;
+        const tableName = table.includes('.') ? table.split('.').pop() : table;
+        _truncateState = { table };
+
+        document.getElementById('truncate-info').textContent =
+            `This will permanently delete all records from "${tableName}".`;
+
+        const confirmBtn = document.getElementById('confirm-truncate-btn');
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = 'Clear All Records';
+        modalShow('truncate-modal');
+    };
+    window.closeTruncateModal = function () {
+        modalHide('truncate-modal');
+        _truncateState = null;
+    };
+
+    document.getElementById('confirm-truncate-btn').addEventListener('click', async function () {
+        if (!_truncateState) return;
+        this.disabled = true;
+        this.textContent = 'Clearing…';
+        try {
+            const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+            const resp = await fetch(
+                `/browser/tables/${encodeURIComponent(_truncateState.table)}/records`,
+                {
+                    method: 'DELETE',
+                    headers: { 'X-CSRF-TOKEN': csrfToken },
+                }
+            );
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || 'Truncate failed');
+            closeTruncateModal();
+            if (currentTable === _truncateState?.table || currentTable === null) {
+                if (currentTable) loadTableData(currentTable, 1);
+            }
+        } catch (e) {
+            this.disabled = false;
+            this.textContent = 'Clear All Records';
+            alert('Error: ' + e.message);
+        }
+    });
+
+    // ── Drop Table Modal ────────────────────────────────────────────────────
+    let _dropTableState = null;
+
+    window.openDropTableModal = function (btn) {
+        const table = btn.dataset.table;
+        const tableName = table.includes('.') ? table.split('.').pop() : table;
+        _dropTableState = { table, tableName };
+
+        document.getElementById('drop-table-info').textContent =
+            `You are about to drop the table "${tableName}".`;
+        document.getElementById('drop-table-confirm-name').textContent = tableName;
+
+        const input = document.getElementById('drop-table-confirm-input');
+        input.value = '';
+        const confirmBtn = document.getElementById('confirm-drop-btn');
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = 'Drop Table';
+        modalShow('drop-table-modal');
+        setTimeout(() => input.focus(), 50);
+    };
+    window.closeDropTableModal = function () {
+        modalHide('drop-table-modal');
+        _dropTableState = null;
+    };
+
+    window.checkDropConfirm = function (input) {
+        const expected = _dropTableState ? _dropTableState.tableName : '';
+        document.getElementById('confirm-drop-btn').disabled = input.value !== expected;
+    };
+
+    document.getElementById('drop-table-confirm-input').addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && !document.getElementById('confirm-drop-btn').disabled) {
+            document.getElementById('confirm-drop-btn').click();
+        }
+    });
+
+    document.getElementById('confirm-drop-btn').addEventListener('click', async function () {
+        if (!_dropTableState || this.disabled) return;
+        this.disabled = true;
+        this.textContent = 'Dropping…';
+        try {
+            const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+            const droppedTable = _dropTableState.table;
+            const resp = await fetch(
+                `/browser/tables/${encodeURIComponent(droppedTable)}`,
+                {
+                    method: 'DELETE',
+                    headers: { 'X-CSRF-TOKEN': csrfToken },
+                }
+            );
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || 'Drop failed');
+            closeDropTableModal();
+            // Reload sidebar
+            htmx.ajax('GET', '/browser/tables', { target: '#sidebar-tables', swap: 'innerHTML' });
+            // Clear main content if the dropped table was selected
+            if (currentTable === droppedTable) {
+                currentTable = null;
+                document.getElementById('active-table-name').textContent = '';
+                document.getElementById('main-content').innerHTML =
+                    '<div class="flex items-center justify-center h-full text-sm text-gray-500">Table dropped. Select a table from the sidebar.</div>';
+            }
+        } catch (e) {
+            document.getElementById('confirm-drop-btn').disabled = false;
+            document.getElementById('confirm-drop-btn').textContent = 'Drop Table';
+            alert('Error: ' + e.message);
+        }
+    });
+
+    document.getElementById('confirm-edit-btn').addEventListener('click', async function () {
         if (!_editState) return;
         const { table, row, pkColumns } = _editState;
 
