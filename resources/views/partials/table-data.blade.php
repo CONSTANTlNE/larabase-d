@@ -1,49 +1,94 @@
 @php
-    $totalPages = $perPage > 0 ? (int) ceil($total / $perPage) : 1;
-    $columns = !empty($rows) ? array_keys($rows[0]) : array_keys($colTypes);
-    $hasPk = !empty($pkColumns);
-    $hasSearch = $searchCol && $searchVal;
-    $jsonFlags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE;
+    $totalPages  = $perPage > 0 ? (int) ceil($total / $perPage) : 1;
+    $columns     = !empty($rows) ? array_keys($rows[0]) : array_keys($colTypes);
+    $hasPk       = !empty($pkColumns);
+    $hasFilters  = !empty($filters);
+    $jsonFlags   = JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE;
+    $fromRow     = $total === 0 ? 0 : ($page - 1) * $perPage + 1;
+    $toRow       = min($page * $perPage, $total);
+
+    /**
+     * Parses a PostgreSQL array literal like {a,"b c",NULL} into a PHP array.
+     */
+    $parsePgArray = function (string $raw): array {
+        if (! str_starts_with($raw, '{') || ! str_ends_with($raw, '}')) {
+            return [$raw];
+        }
+        $inner = substr($raw, 1, -1);
+        if ($inner === '') {
+            return [];
+        }
+
+        return str_getcsv($inner);
+    };
 @endphp
+
+{{-- Column options template (server-rendered once, cloned by JS for each filter row) --}}
+<template id="filter-col-options">
+    <option value="">Column…</option>
+    @foreach($colTypes as $col => $type)
+        <option value="{{ $col }}" data-type="{{ $type }}">
+            {{ $col }}{{ $type === 'jsonb' ? ' ⬡' : '' }}
+        </option>
+    @endforeach
+</template>
 
 <div class="flex flex-col">
 
-    {{-- Sticky header: pagination info + bulk bar + search --}}
+    {{-- Sticky header ─────────────────────────────────────────────────────── --}}
     <div class="sticky top-0 z-10 bg-gray-900 border-b border-gray-800">
 
-        {{-- Row 1: row count + pagination --}}
-        <div class="flex items-center justify-between px-4 py-2">
-            <span class="text-xs text-gray-400">
-                {{ number_format($total) }} row{{ $total !== 1 ? 's' : '' }}
-                @if($hasSearch) <span class="text-blue-400">(filtered)</span> @endif
-                @if($totalPages > 1) &middot; Page {{ $page }} of {{ $totalPages }} @endif
-            </span>
-            <div class="flex items-center gap-2">
+        {{-- Row 1: range + pagination + per-page picker --}}
+        <div class="flex items-center gap-2 px-4 py-1.5">
+            {{-- Row count / range --}}
+            @if($total === 0)
+                <span class="text-xs text-gray-400">0 rows</span>
+            @else
+                <span class="text-xs text-gray-400">{{ number_format($fromRow) }}–{{ number_format($toRow) }} of {{ number_format($total) }}</span>
+            @endif
+            @if($hasFilters)
+                <span class="text-xs text-blue-400">(filtered)</span>
+            @endif
+
+            {{-- Pagination --}}
+            @if($totalPages > 1)
+                <span class="text-gray-700 select-none">·</span>
                 @if($page > 1)
-                    <button class="text-xs text-gray-400 hover:text-gray-200 border border-gray-700 px-2 py-1 rounded transition-colors"
-                        onclick="loadTableData('{{ $table }}', {{ $page - 1 }})">← Prev</button>
+                    <button class="text-xs text-gray-500 hover:text-gray-200 transition-colors"
+                        onclick="loadTableData('{{ $table }}', {{ $page - 1 }})">←</button>
                 @endif
+                <span class="text-xs text-gray-500">{{ $page }}/{{ $totalPages }}</span>
                 @if($page < $totalPages)
-                    <button class="text-xs text-gray-400 hover:text-gray-200 border border-gray-700 px-2 py-1 rounded transition-colors"
-                        onclick="loadTableData('{{ $table }}', {{ $page + 1 }})">Next →</button>
+                    <button class="text-xs text-gray-500 hover:text-gray-200 transition-colors"
+                        onclick="loadTableData('{{ $table }}', {{ $page + 1 }})">→</button>
                 @endif
+            @endif
+
+            {{-- Per-page picker --}}
+            <div class="flex items-center gap-1 ml-auto">
+                <span class="text-xs text-gray-600">per page</span>
+                @foreach([30, 50, 100, 150] as $opt)
+                    <button
+                        onclick="changePerPage({{ $opt }})"
+                        class="text-xs px-1.5 py-0.5 rounded transition-colors {{ $perPage === $opt ? 'bg-blue-600 text-white font-medium' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800' }}">
+                        {{ $opt }}
+                    </button>
+                @endforeach
             </div>
         </div>
 
         {{-- Bulk actions bar (visible only when rows are selected) --}}
         @if($hasPk)
         <div id="bulk-actions-bar"
-             class="hidden items-center justify-between px-4 py-1.5 border-t border-blue-500/20 bg-blue-500/5">
+             class="hidden items-center justify-between px-4 py-1 border-t border-blue-500/20 bg-blue-500/5">
             <span class="text-xs text-blue-400">
                 <span id="selected-count">0</span> rows selected
             </span>
             <div class="flex items-center gap-2">
                 <button onclick="clearRowSelection()"
-                    class="text-xs text-gray-500 hover:text-gray-300 transition-colors">
-                    Clear
-                </button>
+                    class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Clear</button>
                 <button onclick="openBulkDeleteModal()"
-                    class="flex items-center gap-1 text-xs text-white bg-red-600 hover:bg-red-500 px-3 py-1 rounded font-medium transition-colors">
+                    class="flex items-center gap-1 text-xs text-white bg-red-600 hover:bg-red-500 px-2.5 py-0.5 rounded font-medium transition-colors">
                     <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
                     </svg>
@@ -53,58 +98,35 @@
         </div>
         @endif
 
-        {{-- Row 2: search bar --}}
-        <div class="flex items-center gap-2 px-4 py-2 border-t border-gray-800/60">
-            {{-- Column selector --}}
-            <select id="search-col"
-                class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-[140px]"
-                onchange="onSearchColChange()">
-                <option value="">Column…</option>
-                @foreach($colTypes as $col => $type)
-                    <option value="{{ $col }}"
-                        data-type="{{ $type }}"
-                        {{ $searchCol === $col ? 'selected' : '' }}>
-                        {{ $col }}{{ $type === 'jsonb' ? ' ⬡' : '' }}
-                    </option>
-                @endforeach
-            </select>
-
-            {{-- Operator selector --}}
-            <select id="search-op"
-                class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500">
-                <option value="contains"     {{ $searchOp === 'contains'      ? 'selected' : '' }}>contains</option>
-                <option value="equals"       {{ $searchOp === 'equals'        ? 'selected' : '' }}>equals</option>
-                <option value="starts_with"  {{ $searchOp === 'starts_with'   ? 'selected' : '' }} class="non-jsonb-op">starts with</option>
-                <option value="jsonb_contains" {{ $searchOp === 'jsonb_contains' ? 'selected' : '' }} class="jsonb-op" style="display:none">JSON ⊇</option>
-            </select>
-
-            {{-- Value input --}}
-            <input type="text" id="search-val"
-                value="{{ $searchVal ?? '' }}"
-                placeholder="Search…"
-                class="flex-1 min-w-0 bg-gray-800 border border-gray-700 rounded px-3 py-1 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                onkeydown="if(event.key==='Enter') submitSearch()">
-
-            <button onclick="submitSearch()"
-                class="bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1 rounded transition-colors font-medium flex-shrink-0">
-                Search
-            </button>
-
-            @if($hasSearch)
-                <button onclick="clearSearch()"
-                    class="text-xs text-gray-400 hover:text-red-400 border border-gray-700 hover:border-red-500/50 px-2 py-1 rounded transition-colors flex-shrink-0"
-                    title="Clear search">
-                    ✕
+        {{-- Row 2: multi-filter ────────────────────────────────────────────── --}}
+        <div class="px-4 pt-1.5 pb-1.5 border-t border-gray-800/60">
+            <div id="filter-rows" class="space-y-1 mb-1.5"></div>
+            <div class="flex items-center gap-1.5">
+                <button type="button" onclick="addFilterRow()"
+                    class="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 transition-colors">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                    </svg>
+                    Add filter
                 </button>
-            @endif
+                <span class="w-px h-3 bg-gray-700 flex-shrink-0"></span>
+                <button type="button" onclick="applyFilters()"
+                    class="bg-blue-600 hover:bg-blue-500 text-white text-xs px-2.5 py-0.5 rounded font-medium transition-colors">
+                    Apply
+                </button>
+                <button type="button" id="clear-filters-btn" onclick="clearAllFilters()"
+                    class="{{ $hasFilters ? '' : 'hidden' }} text-xs text-gray-500 hover:text-red-400 transition-colors">
+                    Clear
+                </button>
+            </div>
         </div>
     </div>
 
-    {{-- Data grid --}}
+    {{-- Data grid ──────────────────────────────────────────────────────────── --}}
     <div>
         @if(empty($rows))
             <div class="flex items-center justify-center h-32 text-gray-500 text-sm">
-                {{ $hasSearch ? 'No rows match the search.' : 'No rows found.' }}
+                {{ $hasFilters ? 'No rows match the filters.' : 'No rows found.' }}
             </div>
         @else
             <table class="results-table text-xs text-left">
@@ -162,11 +184,14 @@
                             @endif
                             @foreach($row as $col => $value)
                                 @php
+                                    $colType = $colTypes[$col] ?? '';
                                     $cellStr = is_null($value) ? null
                                         : (is_bool($value) ? ($value ? 'true' : 'false') : (string) $value);
+                                    $isArray = $colType === 'ARRAY' && ! is_null($value);
+                                    $arrItems = $isArray ? $parsePgArray($cellStr) : [];
                                 @endphp
                                 <td
-                                    class="px-3 py-2 whitespace-nowrap max-w-xs truncate border-r border-gray-800/30 last:border-r-0 text-gray-300 cursor-pointer hover:bg-gray-700/40"
+                                    class="px-3 py-2 {{ $isArray ? 'max-w-xs' : 'whitespace-nowrap max-w-xs truncate' }} border-r border-gray-800/30 last:border-r-0 text-gray-300 cursor-pointer hover:bg-gray-700/40"
                                     data-col="{{ $col }}"
                                     data-is-null="{{ is_null($value) ? '1' : '0' }}"
                                     data-val="{{ $cellStr ?? '' }}"
@@ -177,6 +202,15 @@
                                         <span class="text-gray-600 italic">NULL</span>
                                     @elseif(is_bool($value))
                                         <span class="{{ $value ? 'text-green-400' : 'text-red-400' }}">{{ $value ? 'true' : 'false' }}</span>
+                                    @elseif($isArray)
+                                        <div class="flex flex-wrap gap-1 py-0.5">
+                                            @foreach(array_slice($arrItems, 0, 5) as $item)
+                                                <span class="bg-gray-700/80 text-gray-300 text-[10px] px-1.5 py-0.5 rounded font-mono">{{ $item === 'NULL' ? 'NULL' : $item }}</span>
+                                            @endforeach
+                                            @if(count($arrItems) > 5)
+                                                <span class="text-gray-600 text-[10px]">+{{ count($arrItems) - 5 }} more</span>
+                                            @endif
+                                        </div>
                                     @else
                                         {{ Str::limit((string) $value, 100) }}
                                     @endif
@@ -218,24 +252,160 @@
 </div>
 
 <script>
-    window._currentSortCol = @json($sortCol);
-    window._currentSortDir = @json($sortDir);
+    window._currentSortCol  = @json($sortCol);
+    window._currentSortDir  = @json($sortDir);
     window._currentTableTotal = {{ $total }};
+    window._colTypes        = @json($colTypes);   // col → pg type
+    window._colEnums        = @json($colEnums);   // col → [allowed values] for enum columns
+    window._currentPerPage  = {{ $perPage }};
 
-    // Restore current search state from server (persists across pagination/sort)
-    window._currentSearch = {
-        col: @json($searchCol),
-        val: @json($searchVal),
-        op:  @json($searchOp),
-    };
+    // Restore active filters from server (persists across pagination/sort)
+    window._currentFilters = @json($filters);
+
+    // ── Filter row factory ──────────────────────────────────────────────────
+    function _makeFilterRow(col, val, op) {
+        col = col || '';
+        val = val || '';
+        op  = op  || 'contains';
+
+        const row = document.createElement('div');
+        row.className = 'filter-row flex items-center gap-1.5';
+
+        // Column selector — clone options from server-rendered template
+        const colSel = document.createElement('select');
+        colSel.className = 'filter-col bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-[140px] truncate';
+        const tpl = document.getElementById('filter-col-options');
+        colSel.innerHTML = tpl ? tpl.innerHTML : '<option value="">Column…</option>';
+        colSel.value = col;
+        colSel.addEventListener('change', function () { _syncFilterOp(row); });
+
+        // Operator selector
+        const opSel = document.createElement('select');
+        opSel.className = 'filter-op bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500 w-28';
+        opSel.innerHTML = `
+            <option value="contains">contains</option>
+            <option value="equals">equals</option>
+            <option value="starts_with" class="non-jsonb-op">starts with</option>
+            <option value="jsonb_contains" class="jsonb-op" style="display:none">JSON ⊇</option>
+        `;
+        opSel.value = op;
+        opSel.addEventListener('change', function () { _syncFilterPlaceholder(row); });
+
+        // Value input
+        const valInput = document.createElement('input');
+        valInput.type = 'text';
+        valInput.className = 'filter-val flex-1 min-w-0 bg-gray-800 border border-gray-700 rounded px-3 py-1 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500';
+        valInput.placeholder = 'Value…';
+        valInput.value = val;
+        valInput.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') applyFilters();
+        });
+
+        // Remove button
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'p-1 rounded text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-colors flex-shrink-0';
+        removeBtn.title = 'Remove filter';
+        removeBtn.innerHTML = `<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>`;
+        removeBtn.addEventListener('click', function () {
+            row.remove();
+            // If all rows gone, add one empty row
+            if (!document.querySelector('.filter-row')) addFilterRow();
+        });
+
+        row.append(colSel, opSel, valInput, removeBtn);
+
+        // Sync operator visibility after construction
+        _syncFilterOp(row);
+
+        return row;
+    }
+
+    function _syncFilterOp(row) {
+        const colSel   = row.querySelector('.filter-col');
+        const opSel    = row.querySelector('.filter-op');
+        const valInput = row.querySelector('.filter-val');
+        const type     = (window._colTypes || {})[colSel.value] || '';
+        const isJsonb  = type === 'jsonb';
+
+        opSel.querySelectorAll('.jsonb-op').forEach(o => { o.style.display = isJsonb ? '' : 'none'; });
+        opSel.querySelectorAll('.non-jsonb-op').forEach(o => { o.style.display = isJsonb ? 'none' : ''; });
+        if (!isJsonb && opSel.value === 'jsonb_contains') opSel.value = 'contains';
+
+        _syncFilterPlaceholder(row);
+    }
+
+    function _syncFilterPlaceholder(row) {
+        const colSel   = row.querySelector('.filter-col');
+        const opSel    = row.querySelector('.filter-op');
+        const valInput = row.querySelector('.filter-val');
+        const type     = (window._colTypes || {})[colSel.value] || '';
+        valInput.placeholder = (type === 'jsonb' && opSel.value === 'jsonb_contains')
+            ? '{"key": "value"}'
+            : 'Value…';
+    }
+
+    function addFilterRow(col, val, op) {
+        const container = document.getElementById('filter-rows');
+        if (!container) return;
+        const row = _makeFilterRow(col, val, op);
+        container.appendChild(row);
+        row.querySelector('.filter-col').focus();
+    }
+
+    function _initFilterRows() {
+        const container = document.getElementById('filter-rows');
+        if (!container) return;
+        container.innerHTML = '';
+        const filters = window._currentFilters || [];
+        if (filters.length === 0) {
+            container.appendChild(_makeFilterRow());
+        } else {
+            filters.forEach(f => container.appendChild(_makeFilterRow(f.col, f.val, f.op)));
+        }
+    }
+
+    function applyFilters() {
+        const rows    = document.querySelectorAll('.filter-row');
+        const filters = [];
+        let jsonErr   = false;
+
+        rows.forEach(row => {
+            const col = row.querySelector('.filter-col').value;
+            const val = row.querySelector('.filter-val').value.trim();
+            const op  = row.querySelector('.filter-op').value;
+            if (!col || val === '') return;
+            if (op === 'jsonb_contains') {
+                try { JSON.parse(val); } catch { jsonErr = true; return; }
+            }
+            filters.push({ col, val, op });
+        });
+
+        if (jsonErr) {
+            alert('One of the JSON ⊇ values is not valid JSON.\nExample: {"status": "active"}');
+            return;
+        }
+
+        window._currentFilters = filters;
+        loadTableData(currentTable, 1);
+    }
+
+    function clearAllFilters() {
+        window._currentFilters = [];
+        _initFilterRows();
+        // Hide clear button
+        const btn = document.getElementById('clear-filters-btn');
+        if (btn) btn.classList.add('hidden');
+        loadTableData(currentTable, 1);
+    }
 
     // ── Multi-select ────────────────────────────────────────────────────────
     function updateRowSelection() {
         const checked = document.querySelectorAll('.row-checkbox:checked');
-        const all = document.querySelectorAll('.row-checkbox');
-        const count = checked.length;
+        const all     = document.querySelectorAll('.row-checkbox');
+        const count   = checked.length;
 
-        const bar = document.getElementById('bulk-actions-bar');
+        const bar     = document.getElementById('bulk-actions-bar');
         const countEl = document.getElementById('selected-count');
         if (bar) {
             bar.classList.toggle('hidden', count === 0);
@@ -267,62 +437,7 @@
             .map(cb => JSON.parse(cb.value));
     };
 
-    // ── Search helpers ──────────────────────────────────────────────────────
-    function onSearchColChange() {
-        const sel   = document.getElementById('search-col');
-        const opSel = document.getElementById('search-op');
-        if (!sel || !opSel) return;
-
-        const type   = sel.options[sel.selectedIndex]?.dataset?.type ?? '';
-        const isJsonb = type === 'jsonb';
-
-        opSel.querySelectorAll('.jsonb-op').forEach(o => o.style.display = isJsonb ? '' : 'none');
-        opSel.querySelectorAll('.non-jsonb-op').forEach(o => o.style.display = isJsonb ? 'none' : '');
-
-        if (!isJsonb && opSel.value === 'jsonb_contains') opSel.value = 'contains';
-
-        const input = document.getElementById('search-val');
-        if (input) {
-            input.placeholder = (isJsonb && opSel.value === 'jsonb_contains')
-                ? '{"key": "value"}'
-                : 'Search…';
-        }
-    }
-
-    document.getElementById('search-op')?.addEventListener('change', function () {
-        const input  = document.getElementById('search-val');
-        const colSel = document.getElementById('search-col');
-        const type   = colSel?.options[colSel.selectedIndex]?.dataset?.type ?? '';
-        if (input) {
-            input.placeholder = (type === 'jsonb' && this.value === 'jsonb_contains')
-                ? '{"key": "value"}'
-                : 'Search…';
-        }
-    });
-
-    function submitSearch() {
-        const col = document.getElementById('search-col')?.value ?? '';
-        const val = document.getElementById('search-val')?.value ?? '';
-        const op  = document.getElementById('search-op')?.value ?? 'contains';
-
-        if (!col) { document.getElementById('search-col')?.focus(); return; }
-
-        if (op === 'jsonb_contains') {
-            try { JSON.parse(val); } catch {
-                alert('Invalid JSON for "JSON ⊇" — enter a valid JSON object, e.g. {"status": "active"}');
-                return;
-            }
-        }
-
-        window._currentSearch = { col, val, op };
-        loadTableData(currentTable, 1);
-    }
-
-    function clearSearch() {
-        window._currentSearch = { col: null, val: null, op: 'contains' };
-        loadTableData(currentTable, 1);
-    }
-
+    // ── Sort ────────────────────────────────────────────────────────────────
     function loadSortedTable(table, col) {
         let dir = 'ASC';
         if (window._currentSortCol === col) {
@@ -333,6 +448,12 @@
         });
     }
 
-    // Sync operator visibility with the restored column value
-    onSearchColChange();
+    // ── Per-page ────────────────────────────────────────────────────────────
+    function changePerPage(n) {
+        window._currentPerPage = n;
+        loadTableData(currentTable, 1);
+    }
+
+    // Bootstrap filter rows on every render
+    _initFilterRows();
 </script>

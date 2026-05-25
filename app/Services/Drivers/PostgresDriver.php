@@ -93,14 +93,15 @@ class PostgresDriver implements DatabaseDriverInterface
     }
 
     /**
+     * @param  array<int, array{col: string, val: string, op: string}>  $filters
      * @return array{rows: list<array<string, mixed>>, total: int}
      */
-    public function getRows(string $qualifiedName, int $page = 1, int $perPage = 50, ?string $sortCol = null, string $sortDir = 'ASC', ?string $searchCol = null, ?string $searchVal = null, string $searchOp = 'contains'): array
+    public function getRows(string $qualifiedName, int $page = 1, int $perPage = 50, ?string $sortCol = null, string $sortDir = 'ASC', array $filters = []): array
     {
         [$schema, $table] = $this->validateTableName($qualifiedName);
         $offset = ($page - 1) * $perPage;
 
-        [$where, $whereParams] = $this->buildSearchWhere($qualifiedName, $searchCol, $searchVal, $searchOp);
+        [$where, $whereParams] = $this->buildSearchWhere($qualifiedName, $filters);
 
         $countStmt = $this->connect()->prepare(
             "SELECT COUNT(*) FROM \"{$schema}\".\"{$table}\"{$where}"
@@ -370,6 +371,233 @@ class PostgresDriver implements DatabaseDriverInterface
     }
 
     /**
+     * @return array{
+     *   outgoing: array<int, array{constraint_name: string, columns: string[], foreign_schema: string, foreign_table: string, foreign_columns: string[], delete_rule: string, update_rule: string}>,
+     *   incoming: array<int, array{constraint_name: string, referencing_schema: string, referencing_table: string, referencing_columns: string[], columns: string[], delete_rule: string, update_rule: string}>
+     * }
+     */
+    public function getRelations(string $qualifiedName): array
+    {
+        [$schema, $table] = $this->validateTableName($qualifiedName);
+        $pdo = $this->connect();
+
+        // Outgoing: FK constraints ON this table pointing to other tables
+        $outStmt = $pdo->prepare(
+            'SELECT tc.constraint_name, kcu.column_name,
+                    ccu.table_schema AS foreign_schema, ccu.table_name AS foreign_table,
+                    ccu.column_name AS foreign_column,
+                    rc.update_rule, rc.delete_rule
+             FROM information_schema.table_constraints tc
+             JOIN information_schema.key_column_usage kcu
+               ON tc.constraint_name = kcu.constraint_name
+              AND tc.table_schema = kcu.table_schema
+              AND tc.table_name = kcu.table_name
+             JOIN information_schema.constraint_column_usage ccu
+               ON ccu.constraint_name = tc.constraint_name
+              AND ccu.table_schema = tc.table_schema
+             JOIN information_schema.referential_constraints rc
+               ON rc.constraint_name = tc.constraint_name
+              AND rc.constraint_schema = tc.table_schema
+             WHERE tc.constraint_type = \'FOREIGN KEY\'
+               AND tc.table_schema = ? AND tc.table_name = ?
+             ORDER BY tc.constraint_name, kcu.ordinal_position'
+        );
+        $outStmt->execute([$schema, $table]);
+
+        $outgoing = [];
+        foreach ($outStmt->fetchAll() as $row) {
+            $name = $row['constraint_name'];
+            if (! isset($outgoing[$name])) {
+                $outgoing[$name] = [
+                    'constraint_name' => $name,
+                    'columns' => [],
+                    'foreign_schema' => $row['foreign_schema'],
+                    'foreign_table' => $row['foreign_table'],
+                    'foreign_columns' => [],
+                    'delete_rule' => $row['delete_rule'],
+                    'update_rule' => $row['update_rule'],
+                ];
+            }
+            $outgoing[$name]['columns'][] = $row['column_name'];
+            $outgoing[$name]['foreign_columns'][] = $row['foreign_column'];
+        }
+
+        // Incoming: FK constraints on OTHER tables that reference this table
+        $inStmt = $pdo->prepare(
+            'SELECT tc.constraint_name,
+                    tc.table_schema AS referencing_schema, tc.table_name AS referencing_table,
+                    kcu.column_name AS referencing_column, ccu.column_name AS referenced_column,
+                    rc.update_rule, rc.delete_rule
+             FROM information_schema.table_constraints tc
+             JOIN information_schema.key_column_usage kcu
+               ON tc.constraint_name = kcu.constraint_name
+              AND tc.table_schema = kcu.table_schema
+              AND tc.table_name = kcu.table_name
+             JOIN information_schema.constraint_column_usage ccu
+               ON ccu.constraint_name = tc.constraint_name
+              AND ccu.table_schema = tc.table_schema
+             JOIN information_schema.referential_constraints rc
+               ON rc.constraint_name = tc.constraint_name
+              AND rc.constraint_schema = tc.table_schema
+             WHERE tc.constraint_type = \'FOREIGN KEY\'
+               AND ccu.table_schema = ? AND ccu.table_name = ?
+             ORDER BY tc.constraint_name, kcu.ordinal_position'
+        );
+        $inStmt->execute([$schema, $table]);
+
+        $incoming = [];
+        foreach ($inStmt->fetchAll() as $row) {
+            $name = $row['constraint_name'];
+            if (! isset($incoming[$name])) {
+                $incoming[$name] = [
+                    'constraint_name' => $name,
+                    'referencing_schema' => $row['referencing_schema'],
+                    'referencing_table' => $row['referencing_table'],
+                    'referencing_columns' => [],
+                    'columns' => [],
+                    'delete_rule' => $row['delete_rule'],
+                    'update_rule' => $row['update_rule'],
+                ];
+            }
+            $incoming[$name]['referencing_columns'][] = $row['referencing_column'];
+            $incoming[$name]['columns'][] = $row['referenced_column'];
+        }
+
+        return [
+            'outgoing' => array_values($outgoing),
+            'incoming' => array_values($incoming),
+        ];
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    public function getColumnEnums(string $qualifiedName): array
+    {
+        [$schema, $table] = $this->validateTableName($qualifiedName);
+
+        $stmt = $this->connect()->prepare(
+            'SELECT a.attname AS column_name, e.enumlabel AS enum_value
+             FROM pg_attribute a
+             JOIN pg_class c ON c.oid = a.attrelid
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_type t ON t.oid = a.atttypid
+             JOIN pg_enum e ON e.enumtypid = t.oid
+             WHERE n.nspname = ? AND c.relname = ?
+             ORDER BY a.attnum, e.enumsortorder'
+        );
+        $stmt->execute([$schema, $table]);
+
+        $result = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $result[$row['column_name']][] = $row['enum_value'];
+        }
+
+        return $result;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function explainQuery(string $sql): array
+    {
+        // Strip any leading EXPLAIN ... prefix the user may have typed
+        $clean = preg_replace('/^\s*EXPLAIN\s*(\([^)]*\)\s*)?/i', '', trim($sql));
+
+        $stmt = $this->connect()->prepare("EXPLAIN (FORMAT JSON) {$clean}");
+        $stmt->execute();
+        $row = $stmt->fetch();
+        $decoded = json_decode((string) ($row['QUERY PLAN'] ?? '[]'), true);
+
+        return $decoded[0]['Plan'] ?? [];
+    }
+
+    /**
+     * @return array{available: bool, rows: list<array<string, mixed>>}
+     */
+    public function getPgStatStatements(int $limit = 50): array
+    {
+        $pdo = $this->connect();
+
+        $check = $pdo->query("SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'");
+        if (! $check->fetchColumn()) {
+            return ['available' => false, 'rows' => []];
+        }
+
+        $stmt = $pdo->prepare(
+            'SELECT query,
+                    calls,
+                    round(mean_exec_time::numeric, 2) AS mean_ms,
+                    round(total_exec_time::numeric, 2) AS total_ms,
+                    rows,
+                    round(stddev_exec_time::numeric, 2) AS stddev_ms,
+                    round(
+                        (100.0 * shared_blks_hit /
+                         NULLIF(shared_blks_hit + shared_blks_read, 0))::numeric, 1
+                    ) AS cache_hit_pct
+             FROM pg_stat_statements
+             ORDER BY mean_exec_time DESC
+             LIMIT ?'
+        );
+        $stmt->execute([$limit]);
+
+        return ['available' => true, 'rows' => $stmt->fetchAll()];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function getTableBloat(): array
+    {
+        $stmt = $this->connect()->query(
+            "SELECT schemaname,
+                    relname AS table_name,
+                    n_live_tup,
+                    n_dead_tup,
+                    last_vacuum,
+                    last_autovacuum,
+                    last_analyze,
+                    last_autoanalyze,
+                    pg_size_pretty(
+                        pg_total_relation_size(
+                            quote_ident(schemaname) || '.' || quote_ident(relname)
+                        )
+                    ) AS total_size,
+                    CASE WHEN (n_live_tup + n_dead_tup) > 0
+                         THEN round(100.0 * n_dead_tup / (n_live_tup + n_dead_tup), 1)
+                         ELSE 0
+                    END AS bloat_pct
+             FROM pg_stat_user_tables
+             WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+             ORDER BY n_dead_tup DESC"
+        );
+
+        return $stmt->fetchAll();
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function getExtensions(): array
+    {
+        $stmt = $this->connect()->query(
+            'SELECT
+                 ae.name,
+                 ae.default_version,
+                 ae.installed_version,
+                 ae.comment,
+                 CASE WHEN ae.installed_version IS NOT NULL THEN 1 ELSE 0 END AS is_installed,
+                 n.nspname AS schema_name
+             FROM pg_available_extensions ae
+             LEFT JOIN pg_extension e ON e.extname = ae.name
+             LEFT JOIN pg_namespace n ON n.oid = e.extnamespace
+             ORDER BY (ae.installed_version IS NOT NULL) DESC, ae.name ASC'
+        );
+
+        return $stmt->fetchAll();
+    }
+
+    /**
      * Returns the PostgreSQL data_type for a column, e.g. "jsonb", "integer", "text".
      */
     private function getColumnType(string $qualifiedName, string $column): string
@@ -384,51 +612,78 @@ class PostgresDriver implements DatabaseDriverInterface
     }
 
     /**
-     * Builds a safe WHERE clause string + bound parameter array for a column search.
+     * Builds a WHERE clause (with bound params) from an array of filter conditions.
+     * All conditions are combined with AND.
      *
+     * @param  array<int, array{col: string, val: string, op: string}>  $filters
      * @return array{string, array<int, mixed>}
      */
-    private function buildSearchWhere(string $qualifiedName, ?string $searchCol, ?string $searchVal, string $searchOp): array
+    private function buildSearchWhere(string $qualifiedName, array $filters): array
     {
-        if ($searchCol === null || $searchVal === null || $searchVal === '') {
+        $conditions = [];
+        $params = [];
+
+        foreach ($filters as $filter) {
+            $col = $filter['col'] ?? null;
+            $val = $filter['val'] ?? null;
+            $op = $filter['op'] ?? 'contains';
+
+            if (! $col || $val === null || $val === '') {
+                continue;
+            }
+
+            try {
+                $validatedCol = $this->validateColumnName($qualifiedName, $col);
+            } catch (RuntimeException) {
+                continue; // skip unknown columns rather than erroring
+            }
+
+            $type = $this->getColumnType($qualifiedName, $validatedCol);
+
+            [$condition, $condParams] = $this->buildSingleCondition($validatedCol, $val, $op, $type);
+            $conditions[] = $condition;
+            $params = [...$params, ...$condParams];
+        }
+
+        if (empty($conditions)) {
             return ['', []];
         }
 
-        $col = $this->validateColumnName($qualifiedName, $searchCol);
-        $type = $this->getColumnType($qualifiedName, $col);
+        return [' WHERE '.implode(' AND ', $conditions), $params];
+    }
 
+    /**
+     * Builds a single SQL predicate (no WHERE keyword) for one filter condition.
+     *
+     * @return array{string, array<int, mixed>}
+     */
+    private function buildSingleCondition(string $col, string $val, string $op, string $type): array
+    {
         $numericTypes = ['integer', 'bigint', 'smallint', 'serial', 'bigserial',
             'numeric', 'decimal', 'real', 'double precision', 'money'];
 
         return match (true) {
-            // JSONB: native containment operator
-            $type === 'jsonb' && $searchOp === 'jsonb_contains' => [
-                " WHERE \"{$col}\" @> ?::jsonb", [$searchVal],
+            $type === 'jsonb' && $op === 'jsonb_contains' => [
+                "\"{$col}\" @> ?::jsonb", [$val],
             ],
-            // JSONB: full-text search by casting to text
             $type === 'jsonb' => [
-                " WHERE \"{$col}\"::text ILIKE ?", ['%'.$searchVal.'%'],
+                "\"{$col}\"::text ILIKE ?", ['%'.$val.'%'],
             ],
-            // Boolean: coerce input to boolean literal
             $type === 'boolean' => [
-                " WHERE \"{$col}\" = ?::boolean",
-                [in_array(strtolower($searchVal), ['true', '1', 'yes', 't', 'on']) ? 'true' : 'false'],
+                "\"{$col}\" = ?::boolean",
+                [in_array(strtolower($val), ['true', '1', 'yes', 't', 'on']) ? 'true' : 'false'],
             ],
-            // Numeric: exact match via text cast (preserves index use for simple cases)
             in_array($type, $numericTypes) => [
-                " WHERE \"{$col}\"::text LIKE ?", [$searchVal.'%'],
+                "\"{$col}\"::text LIKE ?", [$val.'%'],
             ],
-            // Text — starts with
-            $searchOp === 'starts_with' => [
-                " WHERE \"{$col}\" ILIKE ?", [$searchVal.'%'],
+            $op === 'starts_with' => [
+                "\"{$col}\" ILIKE ?", [$val.'%'],
             ],
-            // Text — exact
-            $searchOp === 'equals' => [
-                " WHERE \"{$col}\" = ?", [$searchVal],
+            $op === 'equals' => [
+                "\"{$col}\" = ?", [$val],
             ],
-            // Default: case-insensitive contains
             default => [
-                " WHERE \"{$col}\" ILIKE ?", ['%'.$searchVal.'%'],
+                "\"{$col}\" ILIKE ?", ['%'.$val.'%'],
             ],
         };
     }

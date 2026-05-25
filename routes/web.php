@@ -26,12 +26,17 @@ Route::middleware('auth')->group(function () {
     Route::get('/browser/tables', [BrowserController::class, 'tables'])->name('browser.tables');
     Route::get('/browser/tables/{table}', [BrowserController::class, 'tableData'])->name('browser.table-data');
     Route::get('/browser/tables/{table}/structure', [BrowserController::class, 'tableStructure'])->name('browser.table-structure');
+    Route::get('/browser/tables/{table}/relations', [BrowserController::class, 'tableRelations'])->name('browser.table-relations');
     Route::delete('/browser/tables/{table}/rows/bulk', [BrowserController::class, 'deleteRows'])->name('browser.rows.delete');
     Route::delete('/browser/tables/{table}/rows', [BrowserController::class, 'deleteRow'])->name('browser.row.delete');
     Route::patch('/browser/tables/{table}/rows', [BrowserController::class, 'updateRow'])->name('browser.row.update');
     Route::delete('/browser/tables/{table}/records', [BrowserController::class, 'truncateTable'])->name('browser.table.truncate');
     Route::delete('/browser/tables/{table}', [BrowserController::class, 'dropTable'])->name('browser.table.drop');
     Route::post('/browser/query', [BrowserController::class, 'executeQuery'])->name('browser.query');
+    Route::post('/browser/explain', [BrowserController::class, 'explainQuery'])->name('browser.explain');
+    Route::get('/browser/pg-stat-statements', [BrowserController::class, 'pgStatStatements'])->name('browser.pg-stat-statements');
+    Route::get('/browser/table-bloat', [BrowserController::class, 'tableBloat'])->name('browser.table-bloat');
+    Route::get('/browser/extensions', [BrowserController::class, 'extensions'])->name('browser.extensions');
     Route::get('/browser/saved-queries', [BrowserController::class, 'savedQueries'])->name('browser.saved-queries');
     Route::post('/browser/saved-queries', [BrowserController::class, 'storeSavedQuery'])->name('browser.saved-queries.store');
     Route::delete('/browser/saved-queries/{savedQuery}', [BrowserController::class, 'destroySavedQuery'])->name('browser.saved-queries.destroy');

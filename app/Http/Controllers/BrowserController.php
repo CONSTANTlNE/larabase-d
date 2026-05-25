@@ -75,15 +75,32 @@ class BrowserController extends Controller
         $page = max(1, (int) $request->query('page', 1));
         $sortCol = $request->query('sort');
         $sortDir = strtoupper($request->query('dir', 'ASC')) === 'DESC' ? 'DESC' : 'ASC';
-        $searchCol = $request->query('search_col') ?: null;
-        $searchVal = $request->query('search_val') ?: null;
-        $searchOp = $request->query('search_op', 'contains') ?: 'contains';
+
+        $allowedPerPage = [30, 50, 100, 150];
+        $perPage = (int) $request->query('per_page', 50);
+        if (! in_array($perPage, $allowedPerPage)) {
+            $perPage = 50;
+        }
+
+        $filters = [];
+        foreach ((array) $request->query('filters', []) as $f) {
+            if (! is_array($f)) {
+                continue;
+            }
+            $col = trim((string) ($f['col'] ?? ''));
+            $val = (string) ($f['val'] ?? '');
+            $op = (string) ($f['op'] ?? 'contains');
+            if ($col !== '' && $val !== '') {
+                $filters[] = ['col' => $col, 'val' => $val, 'op' => $op];
+            }
+        }
 
         try {
             $driver = $manager->driver($connection);
-            $result = $driver->getRows($table, $page, 50, $sortCol ?: null, $sortDir, $searchCol, $searchVal, $searchOp);
+            $result = $driver->getRows($table, $page, $perPage, $sortCol ?: null, $sortDir, $filters);
             $pkColumns = $driver->getPrimaryKeyColumns($table);
             $colTypes = array_column($driver->getColumns($table), 'data_type', 'column_name');
+            $colEnums = $driver->getColumnEnums($table);
         } catch (Throwable $e) {
             return view('partials.driver-error', ['message' => $e->getMessage()]);
         }
@@ -93,14 +110,13 @@ class BrowserController extends Controller
             'rows' => $result['rows'],
             'total' => $result['total'],
             'page' => $page,
-            'perPage' => 50,
+            'perPage' => $perPage,
             'sortCol' => $sortCol,
             'sortDir' => $sortDir,
             'pkColumns' => $pkColumns,
             'colTypes' => $colTypes,
-            'searchCol' => $searchCol,
-            'searchVal' => $searchVal,
-            'searchOp' => $searchOp,
+            'colEnums' => $colEnums,
+            'filters' => $filters,
         ]);
     }
 
@@ -290,6 +306,27 @@ class BrowserController extends Controller
         return response()->json(['success' => true]);
     }
 
+    public function tableRelations(string $table, DatabaseManager $manager): View|RedirectResponse
+    {
+        $connection = $this->resolveActiveConnection();
+
+        if ($connection instanceof RedirectResponse) {
+            return $connection;
+        }
+
+        try {
+            $relations = $manager->driver($connection)->getRelations($table);
+        } catch (Throwable $e) {
+            return view('partials.driver-error', ['message' => $e->getMessage()]);
+        }
+
+        return view('partials.table-relations', [
+            'table' => $table,
+            'outgoing' => $relations['outgoing'],
+            'incoming' => $relations['incoming'],
+        ]);
+    }
+
     public function deleteRows(string $table, Request $request, DatabaseManager $manager): JsonResponse|RedirectResponse
     {
         $connection = $this->resolveActiveConnection();
@@ -344,6 +381,83 @@ class BrowserController extends Controller
         }
 
         return response()->json(['success' => true]);
+    }
+
+    public function explainQuery(Request $request, DatabaseManager $manager): View|RedirectResponse
+    {
+        $connection = $this->resolveActiveConnection();
+
+        if ($connection instanceof RedirectResponse) {
+            return $connection;
+        }
+
+        $validated = $request->validate([
+            'sql' => ['required', 'string'],
+        ]);
+
+        try {
+            $plan = $manager->driver($connection)->explainQuery($validated['sql']);
+        } catch (Throwable $e) {
+            return view('partials.driver-error', ['message' => $e->getMessage()]);
+        }
+
+        return view('partials.explain-plan', [
+            'plan' => $plan,
+            'sql' => $validated['sql'],
+        ]);
+    }
+
+    public function pgStatStatements(DatabaseManager $manager): View|RedirectResponse
+    {
+        $connection = $this->resolveActiveConnection();
+
+        if ($connection instanceof RedirectResponse) {
+            return $connection;
+        }
+
+        try {
+            $result = $manager->driver($connection)->getPgStatStatements();
+        } catch (Throwable $e) {
+            return view('partials.driver-error', ['message' => $e->getMessage()]);
+        }
+
+        return view('partials.pg-stat-statements', $result);
+    }
+
+    public function tableBloat(DatabaseManager $manager): View|RedirectResponse
+    {
+        $connection = $this->resolveActiveConnection();
+
+        if ($connection instanceof RedirectResponse) {
+            return $connection;
+        }
+
+        try {
+            $rows = $manager->driver($connection)->getTableBloat();
+        } catch (Throwable $e) {
+            return view('partials.driver-error', ['message' => $e->getMessage()]);
+        }
+
+        return view('partials.table-bloat', ['rows' => $rows]);
+    }
+
+    public function extensions(DatabaseManager $manager): View|RedirectResponse
+    {
+        $connection = $this->resolveActiveConnection();
+
+        if ($connection instanceof RedirectResponse) {
+            return $connection;
+        }
+
+        try {
+            $rows = $manager->driver($connection)->getExtensions();
+        } catch (Throwable $e) {
+            return view('partials.driver-error', ['message' => $e->getMessage()]);
+        }
+
+        $installedCount = count(array_filter($rows, fn ($r) => (int) $r['is_installed'] === 1));
+
+        return view('partials.extensions', compact('rows', 'installedCount'));
     }
 
     public function disconnect(): RedirectResponse

@@ -160,6 +160,39 @@
                 </svg>
                 History
             </button>
+            <button
+                class="w-full flex items-center gap-2 px-4 py-3 text-xs text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors border-t border-gray-800"
+                hx-get="{{ route('browser.pg-stat-statements') }}"
+                hx-target="#main-content"
+                hx-swap="innerHTML"
+            >
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                </svg>
+                Slow Queries
+            </button>
+            <button
+                class="w-full flex items-center gap-2 px-4 py-3 text-xs text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors border-t border-gray-800"
+                hx-get="{{ route('browser.table-bloat') }}"
+                hx-target="#main-content"
+                hx-swap="innerHTML"
+            >
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                </svg>
+                Table Bloat
+            </button>
+            <button
+                class="w-full flex items-center gap-2 px-4 py-3 text-xs text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors border-t border-gray-800"
+                hx-get="{{ route('browser.extensions') }}"
+                hx-target="#main-content"
+                hx-swap="innerHTML"
+            >
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+                Extensions
+            </button>
         </div>
     </aside>
 
@@ -175,6 +208,10 @@
             <button id="tab-structure" onclick="activateTab('structure')"
                 class="tab-btn text-sm px-4 py-3 border-b-2 border-transparent text-gray-400 hover:text-gray-200 transition-colors">
                 Structure
+            </button>
+            <button id="tab-relations" onclick="activateTab('relations')"
+                class="tab-btn text-sm px-4 py-3 border-b-2 border-transparent text-gray-400 hover:text-gray-200 transition-colors">
+                Relations
             </button>
             <button id="tab-query" onclick="activateTab('query')"
                 class="tab-btn text-sm px-4 py-3 border-b-2 border-transparent text-gray-400 hover:text-gray-200 transition-colors">
@@ -198,6 +235,13 @@
                         class="bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1 rounded transition-colors font-medium"
                     >
                         Run
+                    </button>
+                    <button
+                        onclick="explainCurrentQuery()"
+                        class="text-gray-400 hover:text-amber-300 border border-gray-700 hover:border-amber-600/50 text-xs px-3 py-1 rounded transition-colors"
+                        title="EXPLAIN query plan"
+                    >
+                        Explain
                     </button>
                     <button
                         id="save-query-btn"
@@ -418,6 +462,7 @@
 <script>
     let currentTable = null;
     let currentPage = 1;
+    window._currentPerPage = window._currentPerPage || 50;
 
     function activateTab(tab) {
         // Update tab styles
@@ -446,6 +491,8 @@
                     loadTableData(currentTable, currentPage);
                 } else if (tab === 'structure') {
                     loadTableStructure(currentTable);
+                } else if (tab === 'relations') {
+                    loadTableRelations(currentTable);
                 }
             }
         }
@@ -454,7 +501,7 @@
     function selectTable(tableName) {
         currentTable = tableName;
         currentPage = 1;
-        window._currentSearch = { col: null, val: null, op: 'contains' };
+        window._currentFilters = [];
         // Display only the table part (strip schema prefix)
         const displayName = tableName.includes('.') ? tableName.split('.').pop() : tableName;
         document.getElementById('active-table-name').textContent = displayName;
@@ -473,17 +520,24 @@
             activateTab('data');
         } else if (tabId === 'structure') {
             loadTableStructure(tableName);
+        } else if (tabId === 'relations') {
+            loadTableRelations(tableName);
         } else {
             loadTableData(tableName, 1);
         }
     }
 
     function buildTableUrl(table, page, extra = {}) {
-        const search = window._currentSearch || {};
-        const params = new URLSearchParams({ page });
-        if (search.col) params.set('search_col', search.col);
-        if (search.val) params.set('search_val', search.val);
-        if (search.op && search.op !== 'contains') params.set('search_op', search.op);
+        const filters = window._currentFilters || [];
+        const perPage = window._currentPerPage || 50;
+        const params = new URLSearchParams({ page, per_page: perPage });
+        filters.forEach((f, i) => {
+            if (f.col && f.val !== '') {
+                params.append(`filters[${i}][col]`, f.col);
+                params.append(`filters[${i}][val]`, f.val);
+                params.append(`filters[${i}][op]`,  f.op || 'contains');
+            }
+        });
         if (extra.sort) { params.set('sort', extra.sort); params.set('dir', extra.dir || 'ASC'); }
         return `/browser/tables/${encodeURIComponent(table)}?${params}`;
     }
@@ -497,6 +551,13 @@
 
     function loadTableStructure(table) {
         htmx.ajax('GET', `/browser/tables/${encodeURIComponent(table)}/structure`, {
+            target: '#main-content',
+            swap: 'innerHTML',
+        });
+    }
+
+    function loadTableRelations(table) {
+        htmx.ajax('GET', `/browser/tables/${encodeURIComponent(table)}/relations`, {
             target: '#main-content',
             swap: 'innerHTML',
         });
@@ -544,16 +605,133 @@
          'bulk-delete-modal', 'truncate-modal', 'drop-table-modal'].forEach(modalHide);
     });
 
+    // ── JSON / Array helpers ────────────────────────────────────────────────
+
+    /**
+     * Renders a JS value as a collapsible <details>/<summary> tree.
+     * Returns a DOM node.
+     */
+    function renderJsonTree(value, key = null, depth = 0) {
+        const wrap = document.createElement('div');
+        wrap.style.paddingLeft = depth > 0 ? '14px' : '0';
+
+        if (value === null) {
+            wrap.innerHTML = _jsonKV(key, '<span class="text-gray-500 italic">null</span>');
+            return wrap;
+        }
+        if (typeof value === 'object') {
+            const isArr = Array.isArray(value);
+            const items = isArr ? value : Object.keys(value);
+            const count = items.length;
+            const bracket = isArr ? `[${count}]` : `{${count}}`;
+
+            const details = document.createElement('details');
+            details.open = depth < 2;
+            const summary = document.createElement('summary');
+            summary.className = 'cursor-pointer select-none list-none outline-none hover:text-gray-200 py-0.5';
+            summary.innerHTML = _jsonKV(key, `<span class="text-gray-500">${bracket}</span>`);
+            details.appendChild(summary);
+
+            items.forEach((k, i) => {
+                const childKey = isArr ? i : k;
+                const childVal = isArr ? value[i] : value[k];
+                details.appendChild(renderJsonTree(childVal, childKey, depth + 1));
+            });
+            wrap.appendChild(details);
+        } else {
+            let valHtml;
+            if (typeof value === 'string') {
+                const escaped = value.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+                valHtml = `<span class="text-green-400">"${escaped}"</span>`;
+            } else if (typeof value === 'number') {
+                valHtml = `<span class="text-yellow-400">${value}</span>`;
+            } else if (typeof value === 'boolean') {
+                valHtml = `<span class="${value ? 'text-green-400' : 'text-red-400'}">${value}</span>`;
+            } else {
+                valHtml = `<span class="text-gray-300">${value}</span>`;
+            }
+            wrap.innerHTML = _jsonKV(key, valHtml);
+        }
+        return wrap;
+    }
+
+    function _jsonKV(key, valHtml) {
+        if (key === null) return valHtml;
+        const keyHtml = typeof key === 'number'
+            ? `<span class="text-gray-600">${key}</span>`
+            : `<span class="text-blue-300">"${key}"</span>`;
+        return `${keyHtml}: ${valHtml}`;
+    }
+
+    /**
+     * Parses a PostgreSQL array literal {a,"b c",NULL} into a JS string[].
+     */
+    function parsePgArray(str) {
+        if (!str.startsWith('{') || !str.endsWith('}')) return [str];
+        const inner = str.slice(1, -1);
+        if (!inner) return [];
+
+        const result = [];
+        let current = '';
+        let depth = 0;
+        let inQuote = false;
+        for (let i = 0; i < inner.length; i++) {
+            const c = inner[i];
+            if (c === '"' && !inQuote)  { inQuote = true;  continue; }
+            if (c === '"' && inQuote)   { inQuote = false; continue; }
+            if (c === '{' && !inQuote)  { depth++; current += c; continue; }
+            if (c === '}' && !inQuote)  { depth--; current += c; continue; }
+            if (c === ',' && depth === 0 && !inQuote) { result.push(current); current = ''; continue; }
+            current += c;
+        }
+        if (current !== '' || inner.endsWith(',')) result.push(current);
+        return result;
+    }
+
     // ── Cell Expand Modal ───────────────────────────────────────────────────
     window.openCellModal = function(td) {
         const col = td.dataset.col;
         const isNull = td.dataset.isNull === '1';
+        const colType = (window._colTypes || {})[col] || '';
+
         document.getElementById('cell-modal-title').textContent = col;
         const body = document.getElementById('cell-modal-body');
+        body.className = 'flex-1 overflow-auto p-4 text-sm text-gray-100 font-mono whitespace-pre-wrap break-words leading-relaxed';
+        body.innerHTML = '';
+
         if (isNull) {
             body.innerHTML = '<span class="text-gray-600 italic">NULL</span>';
         } else {
-            body.textContent = td.dataset.val;
+            const val = td.dataset.val;
+
+            if (colType === 'jsonb') {
+                // Try to render as interactive JSON tree
+                try {
+                    const parsed = JSON.parse(val);
+                    body.className = 'flex-1 overflow-auto p-4 text-xs font-mono';
+                    body.appendChild(renderJsonTree(parsed));
+                } catch {
+                    body.textContent = val;
+                }
+            } else if (colType === 'ARRAY' || (val.startsWith('{') && val.endsWith('}'))) {
+                // PostgreSQL array — render as indexed list
+                const items = parsePgArray(val);
+                body.className = 'flex-1 overflow-auto p-4 text-xs font-mono space-y-1';
+                items.forEach((item, i) => {
+                    const row = document.createElement('div');
+                    row.className = 'flex items-baseline gap-2';
+                    row.innerHTML = `<span class="text-gray-600 w-6 text-right flex-shrink-0">${i}</span>`
+                        + (item === 'NULL'
+                            ? '<span class="text-gray-500 italic">NULL</span>'
+                            : `<span class="text-gray-200">${item.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>`);
+                    body.appendChild(row);
+                });
+                if (items.length === 0) {
+                    body.innerHTML = '<span class="text-gray-600 italic">empty array</span>';
+                }
+            } else {
+                body.textContent = val;
+            }
         }
         modalShow('cell-modal');
     };
@@ -652,6 +830,8 @@
             }
             field.appendChild(labelRow);
 
+            const enumValues = (window._colEnums || {})[col] || null;
+
             if (isPk) {
                 // Readonly for PK columns
                 const input = document.createElement('input');
@@ -660,6 +840,64 @@
                 input.readOnly = true;
                 input.className = 'w-full bg-gray-800/50 border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-500 font-mono cursor-not-allowed';
                 field.appendChild(input);
+            } else if (enumValues) {
+                // Enum column — show a <select> with allowed values
+                const sel = document.createElement('select');
+                sel.className = 'w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500';
+                sel.dataset.column = col;
+                sel.dataset.isNull = isNull ? 'true' : 'false';
+
+                const blankOpt = document.createElement('option');
+                blankOpt.value = '';
+                blankOpt.textContent = isNull ? '— NULL —' : '— select —';
+                sel.appendChild(blankOpt);
+
+                enumValues.forEach(ev => {
+                    const opt = document.createElement('option');
+                    opt.value = ev;
+                    opt.textContent = ev;
+                    if (ev === strValue) opt.selected = true;
+                    sel.appendChild(opt);
+                });
+
+                sel.addEventListener('change', function() {
+                    this.dataset.isNull = this.value === '' ? 'true' : 'false';
+                });
+
+                // Show allowed values as pills below the select
+                const hint = document.createElement('div');
+                hint.className = 'flex flex-wrap gap-1 mt-1';
+                enumValues.forEach(ev => {
+                    const pill = document.createElement('span');
+                    pill.className = 'text-[10px] bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded font-mono cursor-pointer hover:bg-blue-600/30 hover:text-blue-300';
+                    pill.textContent = ev;
+                    pill.title = 'Click to select';
+                    pill.addEventListener('click', () => { sel.value = ev; sel.dataset.isNull = 'false'; });
+                    hint.appendChild(pill);
+                });
+
+                field.appendChild(sel);
+                field.appendChild(hint);
+
+                // NULL toggle
+                const nullRow = document.createElement('div');
+                nullRow.className = 'flex items-center gap-1.5 mt-1';
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.checked = isNull;
+                cb.className = 'w-3 h-3 accent-blue-500';
+                cb.addEventListener('change', function() {
+                    sel.dataset.isNull = this.checked ? 'true' : 'false';
+                    sel.value = this.checked ? '' : (strValue || enumValues[0] || '');
+                    blankOpt.textContent = this.checked ? '— NULL —' : '— select —';
+                });
+                const cbLabel = document.createElement('label');
+                cbLabel.className = 'text-xs text-gray-600 select-none cursor-pointer';
+                cbLabel.textContent = 'Set to NULL';
+                cbLabel.addEventListener('click', () => { cb.checked = !cb.checked; cb.dispatchEvent(new Event('change')); });
+                nullRow.appendChild(cb);
+                nullRow.appendChild(cbLabel);
+                field.appendChild(nullRow);
             } else {
                 // Editable input or textarea
                 const input = isLong
@@ -937,5 +1175,34 @@
             this.textContent = 'Save Changes';
         }
     });
+
+    // ── EXPLAIN Visualizer ─────────────────────────────────────────────────
+    window.explainCurrentQuery = async function () {
+        const sql = window.cmEditor ? window.cmEditor.state.doc.toString().trim() : '';
+        if (!sql) return;
+
+        const resultsEl = document.getElementById('query-results');
+        resultsEl.innerHTML = '<div class="flex items-center gap-2 px-4 py-3 text-xs text-gray-500"><svg class="lb-spin w-4 h-4 text-blue-500" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-dasharray="32" stroke-dashoffset="10" stroke-linecap="round"/></svg>Running EXPLAIN…</div>';
+
+        // Make query panel visible
+        const qp = document.getElementById('query-panel');
+        if (qp.classList.contains('hidden')) {
+            qp.classList.remove('hidden');
+            qp.classList.add('flex');
+            document.getElementById('main-content').classList.add('hidden');
+        }
+
+        try {
+            const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+            const resp = await fetch('/browser/explain', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+                body: JSON.stringify({ sql }),
+            });
+            resultsEl.innerHTML = await resp.text();
+        } catch (e) {
+            resultsEl.innerHTML = `<div class="px-4 py-3 text-xs text-red-400">Error: ${e.message}</div>`;
+        }
+    };
 </script>
 @endpush
