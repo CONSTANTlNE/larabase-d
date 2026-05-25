@@ -341,6 +341,7 @@
     function selectTable(tableName) {
         currentTable = tableName;
         currentPage = 1;
+        window._currentSearch = { col: null, val: null, op: 'contains' };
         // Display only the table part (strip schema prefix)
         const displayName = tableName.includes('.') ? tableName.split('.').pop() : tableName;
         document.getElementById('active-table-name').textContent = displayName;
@@ -364,8 +365,18 @@
         }
     }
 
+    function buildTableUrl(table, page, extra = {}) {
+        const search = window._currentSearch || {};
+        const params = new URLSearchParams({ page });
+        if (search.col) params.set('search_col', search.col);
+        if (search.val) params.set('search_val', search.val);
+        if (search.op && search.op !== 'contains') params.set('search_op', search.op);
+        if (extra.sort) { params.set('sort', extra.sort); params.set('dir', extra.dir || 'ASC'); }
+        return `/browser/tables/${encodeURIComponent(table)}?${params}`;
+    }
+
     function loadTableData(table, page) {
-        htmx.ajax('GET', `/browser/tables/${encodeURIComponent(table)}?page=${page}`, {
+        htmx.ajax('GET', buildTableUrl(table, page), {
             target: '#main-content',
             swap: 'innerHTML',
         });

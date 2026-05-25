@@ -72,15 +72,18 @@ class BrowserController extends Controller
             return $connection;
         }
 
-
         $page = max(1, (int) $request->query('page', 1));
         $sortCol = $request->query('sort');
         $sortDir = strtoupper($request->query('dir', 'ASC')) === 'DESC' ? 'DESC' : 'ASC';
+        $searchCol = $request->query('search_col') ?: null;
+        $searchVal = $request->query('search_val') ?: null;
+        $searchOp = $request->query('search_op', 'contains') ?: 'contains';
 
         try {
             $driver = $manager->driver($connection);
-            $result = $driver->getRows($table, $page, 50, $sortCol ?: null, $sortDir);
+            $result = $driver->getRows($table, $page, 50, $sortCol ?: null, $sortDir, $searchCol, $searchVal, $searchOp);
             $pkColumns = $driver->getPrimaryKeyColumns($table);
+            $colTypes = array_column($driver->getColumns($table), 'data_type', 'column_name');
         } catch (Throwable $e) {
             return view('partials.driver-error', ['message' => $e->getMessage()]);
         }
@@ -94,6 +97,10 @@ class BrowserController extends Controller
             'sortCol' => $sortCol,
             'sortDir' => $sortDir,
             'pkColumns' => $pkColumns,
+            'colTypes' => $colTypes,
+            'searchCol' => $searchCol,
+            'searchVal' => $searchVal,
+            'searchOp' => $searchOp,
         ]);
     }
 

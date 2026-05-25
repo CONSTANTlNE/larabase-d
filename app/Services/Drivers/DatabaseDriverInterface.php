@@ -17,7 +17,7 @@ interface DatabaseDriverInterface
     /**
      * @return array{rows: array<int, array<string, mixed>>, total: int}
      */
-    public function getRows(string $table, int $page = 1, int $perPage = 50, ?string $sortCol = null, string $sortDir = 'ASC'): array;
+    public function getRows(string $table, int $page = 1, int $perPage = 50, ?string $sortCol = null, string $sortDir = 'ASC', ?string $searchCol = null, ?string $searchVal = null, string $searchOp = 'contains'): array;
 
     /**
      * @return array{columns: array<int, array<string, mixed>>, indexes: array<int, array<string, mixed>>, foreign_keys: array<int, array<string, mixed>>}
@@ -42,13 +42,13 @@ interface DatabaseDriverInterface
     public function getPrimaryKeyColumns(string $qualifiedName): array;
 
     /**
-     * @param array<string, mixed> $pkValues
+     * @param  array<string, mixed>  $pkValues
      */
     public function deleteRow(string $qualifiedName, array $pkValues): void;
 
     /**
-     * @param array<string, mixed> $pkValues
-     * @param array<string, mixed> $newValues
+     * @param  array<string, mixed>  $pkValues
+     * @param  array<string, mixed>  $newValues
      */
     public function updateRow(string $qualifiedName, array $pkValues, array $newValues): void;
 }

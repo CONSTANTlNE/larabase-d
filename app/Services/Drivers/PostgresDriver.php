@@ -15,6 +15,9 @@ class PostgresDriver implements DatabaseDriverInterface
     /** @var array<int, array{schema: string, name: string}>|null */
     private ?array $tablesCache = null;
 
+    /** @var array<string, array<int, array<string, mixed>>> */
+    private array $columnsCache = [];
+
     public function __construct(private readonly Connection $connection) {}
 
     public function connect(): PDO
@@ -72,31 +75,37 @@ class PostgresDriver implements DatabaseDriverInterface
      */
     public function getColumns(string $qualifiedName): array
     {
+        if (isset($this->columnsCache[$qualifiedName])) {
+            return $this->columnsCache[$qualifiedName];
+        }
+
         [$schema, $table] = $this->validateTableName($qualifiedName);
 
         $stmt = $this->connect()->prepare(
-            "SELECT column_name, data_type, is_nullable, column_default
+            'SELECT column_name, data_type, is_nullable, column_default
              FROM information_schema.columns
              WHERE table_schema = ? AND table_name = ?
-             ORDER BY ordinal_position"
+             ORDER BY ordinal_position'
         );
         $stmt->execute([$schema, $table]);
 
-        return $stmt->fetchAll();
+        return $this->columnsCache[$qualifiedName] = $stmt->fetchAll();
     }
 
     /**
      * @return array{rows: list<array<string, mixed>>, total: int}
      */
-    public function getRows(string $qualifiedName, int $page = 1, int $perPage = 50, ?string $sortCol = null, string $sortDir = 'ASC'): array
+    public function getRows(string $qualifiedName, int $page = 1, int $perPage = 50, ?string $sortCol = null, string $sortDir = 'ASC', ?string $searchCol = null, ?string $searchVal = null, string $searchOp = 'contains'): array
     {
         [$schema, $table] = $this->validateTableName($qualifiedName);
         $offset = ($page - 1) * $perPage;
 
+        [$where, $whereParams] = $this->buildSearchWhere($qualifiedName, $searchCol, $searchVal, $searchOp);
+
         $countStmt = $this->connect()->prepare(
-            "SELECT COUNT(*) FROM \"{$schema}\".\"{$table}\""
+            "SELECT COUNT(*) FROM \"{$schema}\".\"{$table}\"{$where}"
         );
-        $countStmt->execute();
+        $countStmt->execute($whereParams);
         $total = (int) $countStmt->fetchColumn();
 
         $orderBy = '';
@@ -107,9 +116,9 @@ class PostgresDriver implements DatabaseDriverInterface
         }
 
         $stmt = $this->connect()->prepare(
-            "SELECT * FROM \"{$schema}\".\"{$table}\"{$orderBy} LIMIT ? OFFSET ?"
+            "SELECT * FROM \"{$schema}\".\"{$table}\"{$where}{$orderBy} LIMIT ? OFFSET ?"
         );
-        $stmt->execute([$perPage, $offset]);
+        $stmt->execute([...$whereParams, $perPage, $offset]);
 
         return [
             'rows' => $stmt->fetchAll(),
@@ -126,10 +135,10 @@ class PostgresDriver implements DatabaseDriverInterface
         $pdo = $this->connect();
 
         $colStmt = $pdo->prepare(
-            "SELECT column_name, data_type, is_nullable, column_default
+            'SELECT column_name, data_type, is_nullable, column_default
              FROM information_schema.columns
              WHERE table_schema = ? AND table_name = ?
-             ORDER BY ordinal_position"
+             ORDER BY ordinal_position'
         );
         $colStmt->execute([$schema, $table]);
         $columns = $colStmt->fetchAll();
@@ -240,13 +249,13 @@ class PostgresDriver implements DatabaseDriverInterface
         [$schema, $table] = $this->validateTableName($qualifiedName);
 
         $stmt = $this->connect()->prepare(
-            "SELECT a.attname
+            'SELECT a.attname
              FROM pg_class t
              JOIN pg_index ix ON t.oid = ix.indrelid
              JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey)
              JOIN pg_namespace ns ON t.relnamespace = ns.oid
              WHERE t.relname = ? AND ns.nspname = ? AND ix.indisprimary = true
-             ORDER BY a.attnum"
+             ORDER BY a.attnum'
         );
         $stmt->execute([$table, $schema]);
 
@@ -254,7 +263,7 @@ class PostgresDriver implements DatabaseDriverInterface
     }
 
     /**
-     * @param array<string, mixed> $pkValues
+     * @param  array<string, mixed>  $pkValues
      */
     public function deleteRow(string $qualifiedName, array $pkValues): void
     {
@@ -273,8 +282,8 @@ class PostgresDriver implements DatabaseDriverInterface
     }
 
     /**
-     * @param array<string, mixed> $pkValues
-     * @param array<string, mixed> $newValues
+     * @param  array<string, mixed>  $pkValues
+     * @param  array<string, mixed>  $newValues
      */
     public function updateRow(string $qualifiedName, array $pkValues, array $newValues): void
     {
@@ -309,6 +318,70 @@ class PostgresDriver implements DatabaseDriverInterface
 
         $stmt = $this->connect()->prepare($sql);
         $stmt->execute([...$setValues, ...$whereValues]);
+    }
+
+    /**
+     * Returns the PostgreSQL data_type for a column, e.g. "jsonb", "integer", "text".
+     */
+    private function getColumnType(string $qualifiedName, string $column): string
+    {
+        foreach ($this->getColumns($qualifiedName) as $col) {
+            if ($col['column_name'] === $column) {
+                return $col['data_type'];
+            }
+        }
+
+        return 'text';
+    }
+
+    /**
+     * Builds a safe WHERE clause string + bound parameter array for a column search.
+     *
+     * @return array{string, array<int, mixed>}
+     */
+    private function buildSearchWhere(string $qualifiedName, ?string $searchCol, ?string $searchVal, string $searchOp): array
+    {
+        if ($searchCol === null || $searchVal === null || $searchVal === '') {
+            return ['', []];
+        }
+
+        $col = $this->validateColumnName($qualifiedName, $searchCol);
+        $type = $this->getColumnType($qualifiedName, $col);
+
+        $numericTypes = ['integer', 'bigint', 'smallint', 'serial', 'bigserial',
+            'numeric', 'decimal', 'real', 'double precision', 'money'];
+
+        return match (true) {
+            // JSONB: native containment operator
+            $type === 'jsonb' && $searchOp === 'jsonb_contains' => [
+                " WHERE \"{$col}\" @> ?::jsonb", [$searchVal],
+            ],
+            // JSONB: full-text search by casting to text
+            $type === 'jsonb' => [
+                " WHERE \"{$col}\"::text ILIKE ?", ['%'.$searchVal.'%'],
+            ],
+            // Boolean: coerce input to boolean literal
+            $type === 'boolean' => [
+                " WHERE \"{$col}\" = ?::boolean",
+                [in_array(strtolower($searchVal), ['true', '1', 'yes', 't', 'on']) ? 'true' : 'false'],
+            ],
+            // Numeric: exact match via text cast (preserves index use for simple cases)
+            in_array($type, $numericTypes) => [
+                " WHERE \"{$col}\"::text LIKE ?", [$searchVal.'%'],
+            ],
+            // Text — starts with
+            $searchOp === 'starts_with' => [
+                " WHERE \"{$col}\" ILIKE ?", [$searchVal.'%'],
+            ],
+            // Text — exact
+            $searchOp === 'equals' => [
+                " WHERE \"{$col}\" = ?", [$searchVal],
+            ],
+            // Default: case-insensitive contains
+            default => [
+                " WHERE \"{$col}\" ILIKE ?", ['%'.$searchVal.'%'],
+            ],
+        };
     }
 
     /**
